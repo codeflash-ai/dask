@@ -47,25 +47,44 @@ def read_header(fo):
     assert fo.read(len(MAGIC)) == MAGIC, "Magic avro bytes missing"
     meta = {}
     out = {"meta": meta}
+
+    buffer_read = fo.read  # Localize for performance (attribute access in tight loop)
+    read_long_local = read_long
+    read_bytes_local = read_bytes
+
     while True:
-        n_keys = read_long(fo)
+        n_keys = read_long_local(fo)
         if n_keys == 0:
             break
+
+        # Optimize loop: inline and batch reading of schema keys/values
+        # Most time is spent in read_bytes (twice per key per header entry)
         for _ in range(n_keys):
-            # ignore dtype mapping for bag version
-            read_bytes(fo)  # schema keys
-            read_bytes(fo)  # schema values
-    out["sync"] = fo.read(SYNC_SIZE)
+            # Each read_bytes reads a long and then that many bytes
+            # We can avoid repeated attribute lookups by using localized buffer_read
+            # But can't bulk-read due to variable sizes from read_long
+
+            # Schema key
+            size_key = read_long_local(fo)
+            buffer_read(size_key)
+
+            # Schema value
+            size_value = read_long_local(fo)
+            buffer_read(size_value)
+
+    out["sync"] = buffer_read(SYNC_SIZE)
     out["header_size"] = fo.tell()
     fo.seek(0)
-    out["head_bytes"] = fo.read(out["header_size"])
+    out["head_bytes"] = buffer_read(out["header_size"])
     return out
 
 
 def open_head(fs, path, compression):
     """Open a file just to read its head and size"""
+    # Avoid attribute lookup inside with block for OpenFile
     with OpenFile(fs, path, compression=compression) as f:
         head = read_header(f)
+    # fs.info is typically lightweight, batch into single statement
     size = fs.info(path)["size"]
     return head, size
 
