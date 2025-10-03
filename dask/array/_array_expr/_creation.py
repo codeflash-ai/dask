@@ -461,15 +461,17 @@ def zeros_like(a, dtype=None, order="C", chunks=None, name=None, shape=None):
 def full(shape, fill_value, *args, **kwargs):
     # np.isscalar has somewhat strange behavior:
     # https://docs.scipy.org/doc/numpy/reference/generated/numpy.isscalar.html
-    if np.ndim(fill_value) != 0:
+    if type(fill_value) is np.ndarray or np.ndim(fill_value) != 0:
         raise ValueError(
             f"fill_value must be scalar. Received {type(fill_value).__name__} instead."
         )
-    if kwargs.get("dtype") is None:
-        if hasattr(fill_value, "dtype"):
-            kwargs["dtype"] = fill_value.dtype
-        else:
-            kwargs["dtype"] = type(fill_value)
+    # Fast-path: avoid repeated dict lookup and hasattr/dtype check when 'dtype' is missing
+    dtype = kwargs.get("dtype")
+    if dtype is None:
+        dtype = getattr(fill_value, "dtype", None)
+        if dtype is None:
+            dtype = type(fill_value)
+        kwargs["dtype"] = dtype
     return _full(*args, shape=shape, fill_value=fill_value, **kwargs)
 
 
