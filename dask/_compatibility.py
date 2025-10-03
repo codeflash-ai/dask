@@ -10,7 +10,11 @@ if sys.version_info >= (3, 12):
     import importlib.metadata as importlib_metadata
 else:
     import importlib_metadata
+
 from packaging.version import Version
+
+# Cache for version objects to avoid repeated instantiation
+_VERSION_CACHE: dict[str, Version] = {}
 
 PY_VERSION = Version(".".join(map(str, sys.version_info[:3])))
 
@@ -127,7 +131,7 @@ def import_optional_dependency(
     minimum_version = min_version if min_version is not None else VERSIONS.get(parent)
     if minimum_version:
         version = get_version(module_to_get)
-        if version and Version(version) < Version(minimum_version):
+        if version and _cached_version(version) < _cached_version(minimum_version):
             msg = (
                 f"Dask requires version '{minimum_version}' or newer of '{parent}' "
                 f"(version '{version}' currently installed)."
@@ -141,3 +145,8 @@ def import_optional_dependency(
                 return None
 
     return module
+
+def _cached_version(version_str: str) -> Version:
+    if version_str not in _VERSION_CACHE:
+        _VERSION_CACHE[version_str] = Version(version_str)
+    return _VERSION_CACHE[version_str]
