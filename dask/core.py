@@ -78,7 +78,7 @@ def lists_to_tuples(res, keys):
 
 
 def _pack_result(result: Mapping, keys: list | Key) -> Any:
-    if isinstance(keys, list):
+    if type(keys) is list:
         return tuple(_pack_result(result, k) for k in keys)
     return result[keys]
 
