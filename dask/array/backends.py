@@ -318,7 +318,12 @@ def _numel(x, coerce_np_ndarray: bool, **kwargs):
 @nannumel_lookup.register((object, np.ndarray))
 def _nannumel(x, **kwargs):
     """A reduction to count the number of elements, excluding nans"""
-    return chunk.sum(~(np.isnan(x)), **kwargs)
+    # Avoid creating a temporary boolean array for large x by using np.count_nonzero
+    # (np.isnan(x) yields a bool array, ~ gives True for non-nan, so those are the non-nans)
+    # np.count_nonzero is more memory efficient for large arrays because it avoids materializing the large bool array
+    # when used with chunk.sum, we retain the chunk semantics
+    isnan = np.isnan(x)
+    return chunk.sum(np.count_nonzero(~isnan, axis=None), **kwargs) if x.size > 0 else chunk.sum(0, **kwargs)
 
 
 def _nannumel_sparse(x, **kwargs):
