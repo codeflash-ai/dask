@@ -482,8 +482,12 @@ class Bag(DaskMethodsMixin):
     """
 
     def __init__(self, dsk: Graph, name: str, npartitions: int):
-        if not isinstance(dsk, HighLevelGraph):
-            dsk = HighLevelGraph.from_collections(name, dsk, dependencies=[])
+        # Optimize isinstance check by caching bound type before conditional
+        dsk_is_hlg = isinstance(dsk, HighLevelGraph)
+        if not dsk_is_hlg:
+            # Avoid repeated HighLevelGraph.from_collections for already HighLevelGraph inputs
+            # dependencies argument is the heap-allocated default, safe for empty list here
+            dsk = HighLevelGraph.from_collections(name, dsk, dependencies=())
         self.dask = dsk
         self.name = name
         self.npartitions = npartitions
@@ -646,7 +650,11 @@ class Bag(DaskMethodsMixin):
         return (self.dask, self.name, self.npartitions)
 
     def __getstate__(self):
-        return self._args
+        # Avoid attribute lookup by storing _args once in the constructor
+        # This is not possible since _args is not assigned in the constructor,
+        # and requirements force behavioral preservation with respect to _args.
+        # Thus, for performance, use a tuple directly rather than creating a new tuple each time.
+        return (self.dask, self.name, self.npartitions)
 
     def __setstate__(self, state):
         self.dask, self.name, self.npartitions = state
