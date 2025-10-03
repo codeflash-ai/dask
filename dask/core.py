@@ -165,7 +165,16 @@ def iskey(key: object) -> bool:
     """
     typ = type(key)
     if typ is tuple:
-        return all(iskey(i) for i in cast(tuple, key))
+        stack = [cast(tuple, key)]
+        while stack:
+            t = stack.pop()
+            for elem in t:
+                elem_typ = type(elem)
+                if elem_typ is tuple:
+                    stack.append(cast(tuple, elem))
+                elif elem_typ not in (int, float, str):
+                    return False
+        return True
     return typ in {int, float, str}
 
 
