@@ -195,7 +195,14 @@ def same_keys(a, b):
         else:
             return k
 
-    return sorted(a.dask, key=key) == sorted(b.dask, key=key)
+    # Avoid creating sorted lists unless absolutely needed: compare lengths first
+    if len(a.dask) != len(b.dask):
+        return False
+
+    # Use generator expressions with tuple comparison for efficiency
+    a_keys = sorted(a.dask, key=key)
+    b_keys = sorted(b.dask, key=key)
+    return a_keys == b_keys
 
 
 def _not_empty(x):
