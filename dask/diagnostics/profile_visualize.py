@@ -335,7 +335,11 @@ def plot_resources(results, start_time, end_time, palette="Viridis", **kwargs):
 
 def fix_bounds(start, end, min_span):
     """Adjust end point to ensure span of at least `min_span`"""
-    return start, max(end, start + min_span)
+    # Avoid unnecessary max() call if end is already sufficient
+    min_end = start + min_span
+    if end < min_end:
+        return start, min_end
+    return start, end
 
 
 def plot_cache(
