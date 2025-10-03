@@ -12,7 +12,8 @@ import tempfile
 import types
 import uuid
 import warnings
-from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping, Set
+from collections.abc import (Callable, Hashable, Iterable, Iterator, Mapping,
+                             Set)
 from contextlib import ContextDecorator, contextmanager, nullcontext, suppress
 from datetime import datetime, timedelta
 from errno import ENOENT
