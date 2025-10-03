@@ -6,12 +6,8 @@ from typing import Any, Literal, TypeVar, cast, overload
 
 import toolz
 
-from dask._task_spec import (
-    DependenciesMapping,
-    TaskRef,
-    convert_legacy_graph,
-    execute_graph,
-)
+from dask._task_spec import (DataNode, DependenciesMapping, GraphNode, TaskRef,
+                             convert_legacy_graph, execute_graph)
 from dask.typing import Graph, Key, NoDefault, no_default
 
 
@@ -51,11 +47,11 @@ def istask(x):
     >>> istask(1)
     False
     """
-    from dask._task_spec import DataNode, GraphNode
-
+    if type(x) is tuple and x and callable(x[0]):
+        return True
     if isinstance(x, GraphNode):
         return not isinstance(x, DataNode)
-    return type(x) is tuple and x and callable(x[0])
+    return False
 
 
 def preorder_traversal(task):
