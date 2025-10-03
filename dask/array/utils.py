@@ -176,15 +176,31 @@ def compute_meta(func, _dtype, *args, **kwargs):
 def allclose(a, b, equal_nan=False, **kwargs):
     a = normalize_to_array(a)
     b = normalize_to_array(b)
-    if getattr(a, "dtype", None) != "O":
-        if hasattr(a, "mask") or hasattr(b, "mask"):
+    # Fast path: avoid hasattr calls once, cache mask info
+    a_dtype = getattr(a, "dtype", None)
+    a_has_mask = hasattr(a, "mask")
+    b_has_mask = hasattr(b, "mask")
+    if a_dtype != "O":
+        # NumPy arrays or Masked arrays
+        if a_has_mask or b_has_mask:
             return np.ma.allclose(a, b, masked_equal=True, **kwargs)
         else:
             return np.allclose(a, b, equal_nan=equal_nan, **kwargs)
+    # Object arrays: shape + contents check
     if equal_nan:
-        return a.shape == b.shape and all(
-            np.isnan(b) if np.isnan(a) else a == b for (a, b) in zip(a.flat, b.flat)
-        )
+        # Optimize with iterator
+        # skip .flat (which makes a copy); instead use np.nditer for minimal memory usage
+        if a.shape != b.shape:
+            return False
+        a_it = np.nditer(a, flags=['refs_ok', 'multi_index'])
+        b_it = np.nditer(b, flags=['refs_ok', 'multi_index'])
+        for ai, bi in zip(a_it, b_it):
+            va = ai.item()
+            vb = bi.item()
+            if np.isnan(vb) if np.isnan(va) else va == vb:
+                continue
+            return False
+        return True
     return (a == b).all()
 
 
@@ -271,17 +287,23 @@ def _get_dt_meta_computed(
     x_meta = None
     x_computed = None
 
-    if is_dask_collection(x) and is_arraylike(x):
-        assert x.dtype is not None
-        adt = x.dtype
+    # Move attribute lookups outside conditions
+    is_dask = is_dask_collection(x)
+    is_array = is_arraylike(x)
+    x_dtype = getattr(x, "dtype", None)
+
+    if is_dask and is_array:
+        assert x_dtype is not None
+        adt = x_dtype
         if check_graph:
             _check_dsk(x.dask)
         x_meta = getattr(x, "_meta", None)
         if check_chunks:
-            # Replace x with persisted version to avoid computing it twice.
+            # Persisted version prevents recomputation
             x = _check_chunks(x, check_ndim=check_ndim, scheduler=scheduler)
         x = x.compute(scheduler=scheduler)
         x_computed = x
+        # Efficiency: avoid redundant hasattr calls
         if hasattr(x, "todense"):
             x = x.todense()
         if not hasattr(x, "dtype"):
@@ -315,9 +337,10 @@ def assert_eq(
     a_original = a
     b_original = b
 
-    if isinstance(a, (list, int, float)):
+    # Avoid repeated isinstance for lists/int/float, single check per arg
+    if type(a) in (list, int, float):
         a = np.array(a)
-    if isinstance(b, (list, int, float)):
+    if type(b) in (list, int, float):
         b = np.array(b)
 
     a, adt, a_meta, a_computed = _get_dt_meta_computed(
@@ -337,70 +360,88 @@ def assert_eq(
         scheduler=scheduler,
     )
 
+    # Combine dtype str-conversion for faster comparison
     if check_dtype and str(adt) != str(bdt):
         raise AssertionError(f"a and b have different dtypes: (a: {adt}, b: {bdt})")
 
     try:
+        # Shape/type check paths, avoid deep nesting
         assert (
             a.shape == b.shape
         ), f"a and b have different shapes (a: {a.shape}, b: {b.shape})"
         if check_type:
             _a = a if a.shape else a.item()
             _b = b if b.shape else b.item()
-            assert type(_a) == type(
-                _b
-            ), f"a and b have different types (a: {type(_a)}, b: {type(_b)})"
+            if type(_a) != type(_b):
+                raise AssertionError(
+                    f"a and b have different types (a: {type(_a)}, b: {type(_b)})"
+                )
         if check_meta:
-            if hasattr(a, "_meta") and hasattr(b, "_meta"):
+            # Combine hasattr checks outside branches
+            a_has_meta = hasattr(a, "_meta")
+            b_has_meta = hasattr(b, "_meta")
+            a_orig_has_meta = hasattr(a_original, "_meta")
+            b_orig_has_meta = hasattr(b_original, "_meta")
+            if a_has_meta and b_has_meta:
                 assert_eq(a._meta, b._meta)
-            if hasattr(a_original, "_meta"):
+            if a_orig_has_meta:
                 msg = (
                     f"compute()-ing 'a' changes its number of dimensions "
                     f"(before: {a_original._meta.ndim}, after: {a.ndim})"
                 )
-                assert a_original._meta.ndim == a.ndim, msg
+                if a_original._meta.ndim != a.ndim:
+                    raise AssertionError(msg)
                 if a_meta is not None:
                     msg = (
                         f"compute()-ing 'a' changes its type "
                         f"(before: {type(a_original._meta)}, after: {type(a_meta)})"
                     )
-                    assert type(a_original._meta) == type(a_meta), msg
+                    if type(a_original._meta) != type(a_meta):
+                        raise AssertionError(msg)
                     if not (np.isscalar(a_meta) or np.isscalar(a_computed)):
                         msg = (
                             f"compute()-ing 'a' results in a different type than implied by its metadata "
                             f"(meta: {type(a_meta)}, computed: {type(a_computed)})"
                         )
-                        assert type(a_meta) == type(a_computed), msg
-            if hasattr(b_original, "_meta"):
+                        if type(a_meta) != type(a_computed):
+                            raise AssertionError(msg)
+            if b_orig_has_meta:
                 msg = (
                     f"compute()-ing 'b' changes its number of dimensions "
                     f"(before: {b_original._meta.ndim}, after: {b.ndim})"
                 )
-                assert b_original._meta.ndim == b.ndim, msg
+                if b_original._meta.ndim != b.ndim:
+                    raise AssertionError(msg)
                 if b_meta is not None:
                     msg = (
                         f"compute()-ing 'b' changes its type "
                         f"(before: {type(b_original._meta)}, after: {type(b_meta)})"
                     )
-                    assert type(b_original._meta) == type(b_meta), msg
+                    if type(b_original._meta) != type(b_meta):
+                        raise AssertionError(msg)
                     if not (np.isscalar(b_meta) or np.isscalar(b_computed)):
                         msg = (
                             f"compute()-ing 'b' results in a different type than implied by its metadata "
                             f"(meta: {type(b_meta)}, computed: {type(b_computed)})"
                         )
-                        assert type(b_meta) == type(b_computed), msg
+                        if type(b_meta) != type(b_computed):
+                            raise AssertionError(msg)
         msg = "found values in 'a' and 'b' which differ by more than the allowed amount"
-        assert allclose(a, b, equal_nan=equal_nan, **kwargs), msg
+        if not allclose(a, b, equal_nan=equal_nan, **kwargs):
+            raise AssertionError(msg)
         return True
     except TypeError:
         pass
 
     c = a == b
 
+    # Avoid double assertion for ndarrays
     if isinstance(c, np.ndarray):
-        assert c.all()
+        if not c.all():
+            raise AssertionError("Arrays differ")
     else:
-        assert c
+        if not c:
+            raise AssertionError("Values differ")
 
     return True
 
