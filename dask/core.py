@@ -14,6 +14,8 @@ from dask._task_spec import (
 )
 from dask.typing import Graph, Key, NoDefault, no_default
 
+_KEY_TYPES = {int, float, str}
+
 
 def ishashable(x):
     """Is x hashable?
@@ -164,9 +166,22 @@ def iskey(key: object) -> bool:
     dask.typing.Key
     """
     typ = type(key)
+    if typ in _KEY_TYPES:
+        return True
     if typ is tuple:
-        return all(iskey(i) for i in cast(tuple, key))
-    return typ in {int, float, str}
+        stack = [cast(tuple, key)]
+        while stack:
+            t = stack.pop()
+            for i in t:
+                i_typ = type(i)
+                if i_typ in _KEY_TYPES:
+                    continue
+                elif i_typ is tuple:
+                    stack.append(cast(tuple, i))
+                else:
+                    return False
+        return True
+    return False
 
 
 def validate_key(key: object) -> None:
