@@ -924,15 +924,26 @@ class Dict(NestedContainer, Mapping):
         if args:
             assert not kwargs
             if len(args) == 1:
-                args = args[0]
-                if isinstance(args, dict):  # type: ignore
-                    args = tuple(itertools.chain(*args.items()))  # type: ignore
-                elif isinstance(args, (list, tuple)):
-                    if all(
-                        len(el) == 2 if isinstance(el, (list, tuple)) else False
-                        for el in args
+                args0 = args[0]
+                if isinstance(args0, dict):  # type: ignore
+                    args = tuple(itertools.chain.from_iterable(args0.items()))  # type: ignore
+                elif isinstance(args0, (list, tuple)):
+                    # fast check for tuple of pairs; avoids repeated all() if not needed
+                    args = args0
+                    _needs_unpack = (
+                        bool(args)
+                        and isinstance(args[0], (list, tuple))
+                        and len(args[0]) == 2
+                    )
+                    if (
+                        _needs_unpack
+                        and all(
+                            isinstance(el, (list, tuple)) and len(el) == 2
+                            for el in args
+                        )
                     ):
-                        args = tuple(itertools.chain(*args))
+                        args = tuple(itertools.chain.from_iterable(args))
+                    # otherwise, leave as is so error is raised below
                 else:
                     raise ValueError("Invalid argument provided")
 
@@ -941,7 +952,7 @@ class Dict(NestedContainer, Mapping):
 
         elif kwargs:
             assert not args
-            args = tuple(itertools.chain(*kwargs.items()))
+            args = tuple(itertools.chain.from_iterable(kwargs.items()))
 
         super().__init__(*args)
 
@@ -982,7 +993,17 @@ class Dict(NestedContainer, Mapping):
 
     @staticmethod
     def constructor(args):
-        return dict(batched(args, 2, strict=True))
+        # Optimization: avoid using batched/itertools in tight loop; direct loop is much faster for tuples/lists
+        # Assumes 'args' is a flat iterable of alternating keys/values with even length
+        # This code path is frequently called, so micro-optimization is justified
+        # If 'args' is tuple or list, can slice to get keys/values
+        if isinstance(args, (tuple, list)) and len(args) % 2 == 0:
+            return dict(zip(args[::2], args[1::2]))
+        # Fallback for other iterables: materialize as tuple for sliceable access if necessary
+        _args = tuple(args)
+        if len(_args) % 2 != 0:
+            raise ValueError("Invalid number of arguments provided")
+        return dict(zip(_args[::2], _args[1::2]))
 
 
 class DependenciesMapping(MutableMapping):
