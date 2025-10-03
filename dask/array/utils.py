@@ -515,17 +515,25 @@ def asanyarray_safe(a, like, **kwargs):
 
 def validate_axis(axis, ndim):
     """Validate an input to axis= keywords"""
-    if isinstance(axis, (tuple, list)):
+    # Common fast-path for a single integer axis (vast majority of numpy/dask cases)
+    if isinstance(axis, numbers.Integral):
+        if axis < -ndim or axis >= ndim:
+            raise AxisError(
+                "Axis %d is out of bounds for array of dimension %d" % (axis, ndim)
+            )
+        if axis < 0:
+            axis += ndim
+        return axis
+
+    # Recursively validate a tuple or list of axes
+    if isinstance(axis, tuple):
+        # tuple() generator comprehension is slightly faster than for a list
         return tuple(validate_axis(ax, ndim) for ax in axis)
-    if not isinstance(axis, numbers.Integral):
-        raise TypeError("Axis value must be an integer, got %s" % axis)
-    if axis < -ndim or axis >= ndim:
-        raise AxisError(
-            "Axis %d is out of bounds for array of dimension %d" % (axis, ndim)
-        )
-    if axis < 0:
-        axis += ndim
-    return axis
+    if isinstance(axis, list):
+        # avoid a generator-comp for lists as user will likely want tuple anyway
+        return tuple(validate_axis(ax, ndim) for ax in axis)
+
+    raise TypeError("Axis value must be an integer, got %s" % axis)
 
 
 def svd_flip(u, v, u_based_decision=False):
