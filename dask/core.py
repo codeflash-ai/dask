@@ -73,7 +73,7 @@ def preorder_traversal(task):
 
 def lists_to_tuples(res, keys):
     if isinstance(keys, list):
-        return tuple(lists_to_tuples(r, k) for r, k in zip(res, keys))
+        return tuple(map(lists_to_tuples, res, keys))
     return res
 
 
