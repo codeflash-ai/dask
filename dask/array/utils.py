@@ -16,6 +16,8 @@ from dask.base import is_dask_collection, tokenize
 from dask.highlevelgraph import HighLevelGraph
 from dask.utils import has_keyword, is_arraylike, is_cupy_type, typename
 
+_axiserror_type_str = typename(AxisError)
+
 
 def normalize_to_array(x):
     if is_cupy_type(x):
@@ -595,7 +597,7 @@ def __getattr__(name):
     if name == "AxisError":
         warnings.warn(
             "AxisError was deprecated after version 2021.10.0 and will be removed in a "
-            f"future release. Please use {typename(AxisError)} instead.",
+            f"future release. Please use {_axiserror_type_str} instead.",
             category=FutureWarning,
             stacklevel=2,
         )
