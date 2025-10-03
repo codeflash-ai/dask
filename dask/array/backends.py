@@ -233,6 +233,9 @@ def register_scipy_sparse():
 
     try:
         from scipy.sparse import sparray
+        
+        # Direct registration to bypass Python method lookup overhead
+        to_numpy_dispatch.register(np.ndarray, lambda data, **kwargs: data)
     except ImportError:
         pass  # sparray is not available in older scipy versions
     else:
