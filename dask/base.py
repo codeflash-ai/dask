@@ -1207,12 +1207,16 @@ def wait(x, timeout=None, return_when="ALL_COMPLETED"):
     If it is applied onto Dask collections without Dask Futures or if Dask
     distributed is not installed then it is a no-op
     """
-    try:
-        from distributed import wait
+    if not hasattr(wait, "_cached_wait"):
+        try:
+            from distributed import wait as distributed_wait
+            wait._cached_wait = distributed_wait
+        except (ImportError, ValueError):
+            wait._cached_wait = None
 
-        return wait(x, timeout=timeout, return_when=return_when)
-    except (ImportError, ValueError):
-        return x
+    if wait._cached_wait is not None:
+        return wait._cached_wait(x, timeout=timeout, return_when=return_when)
+    return x
 
 
 def get_collection_names(collection) -> set[str]:
