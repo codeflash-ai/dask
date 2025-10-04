@@ -480,42 +480,91 @@ def unpack_collections(*args, traverse=True):
 
     collections_token = uuid.uuid4().hex
 
+    # Cache dataclasses.fields(typ) to avoid repeated reflection
+    _fields_cache = {}
+
+    # Local aliases for tight loop performance
+    append_col = collections.append
+    repack_set = repack_dsk.__setitem__
+    uuid4_hex = uuid.uuid4
+    DataNode_ = DataNode
+    TaskRef_ = TaskRef
+    Task_ = Task
+    List_ = List
+    Dict_ = Dict
+
+    # Avoid attribute lookups in loop
+    _is_dataclass = dataclasses.is_dataclass
+    _fields = dataclasses.fields
+    _is_namedtuple_instance = is_namedtuple_instance
+
+    # Use explicit constant type tuples for isinstance checks
+    _seq_types = (list, tuple, set)
+    _dict_types = (dict, OrderedDict)
+
+    # Memoization for dask collections to avoid redundant work
+    token_map = {}
+
     def _unpack(expr):
+        # Dask collection fast-path
         if is_dask_collection(expr):
             tok = tokenize(expr)
-            if tok not in repack_dsk:
-                repack_dsk[tok] = Task(
-                    tok, getitem, TaskRef(collections_token), len(collections)
-                )
-                collections.append(expr)
-            return TaskRef(tok)
+            val = token_map.get(tok)
+            if val is None:
+                repack_set(tok, Task_(tok, getitem, TaskRef_(collections_token), len(collections)))
+                append_col(expr)
+                token_map[tok] = TaskRef_(tok)
+                return TaskRef_(tok)
+            return val
 
-        tok = uuid.uuid4().hex
-        tsk: DataNode | Task  # type: ignore
         if not traverse:
-            tsk = DataNode(None, expr)
-        else:
-            # Treat iterators like lists
-            typ = list if isinstance(expr, Iterator) else type(expr)
-            if typ in (list, tuple, set):
-                tsk = Task(tok, typ, List(*[_unpack(i) for i in expr]))
-            elif typ in (dict, OrderedDict):
-                tsk = Task(
-                    tok, typ, Dict({_unpack(k): _unpack(v) for k, v in expr.items()})
-                )
-            elif dataclasses.is_dataclass(expr) and not isinstance(expr, type):
-                tsk = Task(
-                    tok,
-                    typ,
-                    *[_unpack(getattr(expr, f.name)) for f in dataclasses.fields(expr)],
-                )
-            elif is_namedtuple_instance(expr):
-                tsk = Task(tok, typ, *[_unpack(i) for i in expr])
-            else:
-                return expr
+            tok = uuid4_hex().hex
+            tsk: DataNode | Task  # type: ignore
+            tsk = DataNode_(None, expr)
+            repack_set(tok, tsk)
+            return TaskRef_(tok)
 
-        repack_dsk[tok] = tsk
-        return TaskRef(tok)
+        typ = list if isinstance(expr, Iterator) else type(expr)
+
+        if typ in _seq_types:
+            tok = uuid4_hex().hex
+            # Pre-allocate result for improved loop allocation
+            vals = [_unpack(i) for i in expr]
+            tsk = Task_(tok, typ, List_(*vals))
+            repack_set(tok, tsk)
+            return TaskRef_(tok)
+
+        elif typ in _dict_types:
+            tok = uuid4_hex().hex
+            # Avoid using a comprehension that evaluates .items() each time
+            d = expr.items()
+            keys_vals = { _unpack(k): _unpack(v) for k, v in d }
+            tsk = Task_(tok, typ, Dict_(keys_vals))
+            repack_set(tok, tsk)
+            return TaskRef_(tok)
+
+        elif _is_dataclass(expr) and not isinstance(expr, type):
+            typ_clz = type(expr)
+            tok = uuid4_hex().hex
+            if typ_clz in _fields_cache:
+                fields = _fields_cache[typ_clz]
+            else:
+                fields = _fields(typ_clz)
+                _fields_cache[typ_clz] = fields
+            vals = [_unpack(getattr(expr, f.name)) for f in fields]
+            tsk = Task_(tok, typ, *vals)
+            repack_set(tok, tsk)
+            return TaskRef_(tok)
+
+        elif _is_namedtuple_instance(expr):
+            tok = uuid4_hex().hex
+            vals = [_unpack(i) for i in expr]
+            tsk = Task_(tok, typ, *vals)
+            repack_set(tok, tsk)
+            return TaskRef_(tok)
+
+        else:
+            return expr
 
     out = uuid.uuid4().hex
     repack_dsk[out] = Task(out, tuple, List(*[_unpack(i) for i in args]))
@@ -525,8 +574,6 @@ def unpack_collections(*args, traverse=True):
         dsk[collections_token] = DataNode(collections_token, results)
         return simple_get(dsk, out)
 
-    # The original `collections` is kept alive by the closure
-    # This causes the collection to be only freed by the garbage collector
     collections2 = list(collections)
     collections.clear()
     return collections2, repack
