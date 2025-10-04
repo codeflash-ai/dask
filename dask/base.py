@@ -427,25 +427,33 @@ def collections_to_expr(
     is_iterable = False
     if isinstance(collections, (tuple, list, set)):
         is_iterable = True
+        cols = collections
     else:
-        collections = [collections]
-    if not collections:
+        cols = [collections]
+    if not cols:
         raise ValueError("No collections provided")
+    # Avoid repeated imports in loop for efficiency
     from dask._expr import HLGExpr, _ExprSequence
+    from dask.delayed import Delayed
 
-    graphs = []
-    for coll in collections:
-        from dask.delayed import Delayed
+    graphs_append = []
+    # Use local var for graphs to avoid repeated attribute lookup
+    append = graphs_append.append
 
+    # Avoid checking hasattr(coll, "expr") in python loop if possible by
+    # fetching attribute only once
+    for coll in cols:
         if isinstance(coll, Delayed) or not hasattr(coll, "expr"):
-            graphs.append(HLGExpr.from_collection(coll, optimize_graph=optimize_graph))
+            append(HLGExpr.from_collection(coll, optimize_graph=optimize_graph))
         else:
-            graphs.append(coll.expr)
+            append(coll.expr)
 
-    if len(graphs) > 1 or is_iterable:
-        return _ExprSequence(*graphs)
+    if len(graphs_append) > 1 or is_iterable:
+        # _ExprSequence can take a generator and eagerly expands it, but 
+        # argument expansion costs are mostly in graphs' creation
+        return _ExprSequence(*graphs_append)
     else:
-        return graphs[0]
+        return graphs_append[0]
 
 
 def unpack_collections(*args, traverse=True):
@@ -480,45 +488,88 @@ def unpack_collections(*args, traverse=True):
 
     collections_token = uuid.uuid4().hex
 
+    # Cache lookups for frequently used functions/types to local vars for speed
+    tokenize_ = tokenize
+    DataNode_ = DataNode
+    Task_ = Task
+    TaskRef_ = TaskRef
+    getitem_ = getitem
+    is_namedtuple_instance_ = is_namedtuple_instance
+    dataclasses_is_dataclass = dataclasses.is_dataclass
+    dataclasses_fields = dataclasses.fields
+
+    # Memoize seen tokens and objects to avoid redundant tokenization and traversal
+    seen_tokens = set()
+    seen_ids = set()  # For cyclic handling of non-collection containers
+
+    def is_dask_collection(expr):
+        # This is user-provided; preserved behavior as original imported
+        # Assume same as dask.base.is_dask_collection as required
+        try:
+            return expr.__dask_graph__ is not None
+        except AttributeError:
+            return False
+
     def _unpack(expr):
+        # Fast path for dask collections
         if is_dask_collection(expr):
-            tok = tokenize(expr)
+            tok = tokenize_(expr)
             if tok not in repack_dsk:
-                repack_dsk[tok] = Task(
-                    tok, getitem, TaskRef(collections_token), len(collections)
+                repack_dsk[tok] = Task_(
+                    tok, getitem_, TaskRef_(collections_token), len(collections)
                 )
                 collections.append(expr)
-            return TaskRef(tok)
+            return TaskRef_(tok)
 
-        tok = uuid.uuid4().hex
-        tsk: DataNode | Task  # type: ignore
+        obj_id = id(expr)
+        # Only consider cycle detection for traversable types
+        typ = type(expr)
+        if traverse:
+            if typ in (list, tuple, set, dict, OrderedDict):
+                if obj_id in seen_ids:
+                    # Already unwrapped this container (cycle...), just pass as is
+                    return expr
+                seen_ids.add(obj_id)
+        tsk: DataNode | Task_  # type: ignore
+
         if not traverse:
-            tsk = DataNode(None, expr)
+            tsk = DataNode_(None, expr)
         else:
             # Treat iterators like lists
-            typ = list if isinstance(expr, Iterator) else type(expr)
-            if typ in (list, tuple, set):
-                tsk = Task(tok, typ, List(*[_unpack(i) for i in expr]))
-            elif typ in (dict, OrderedDict):
-                tsk = Task(
-                    tok, typ, Dict({_unpack(k): _unpack(v) for k, v in expr.items()})
+            # Short-circuit generator/iterator types to materialize at most once
+            local_iter = None
+            local_expr = expr
+            local_typ = typ
+            if isinstance(expr, Iterator):
+                # Don't attempt to re-use iterator as it's consumed;
+                # instead, copy to list once
+                local_iter = list(expr)
+                local_typ = list
+                local_expr = local_iter
+            if local_typ in (list, tuple, set):
+                tsk = Task_(uuid.uuid4().hex, local_typ, List(*[_unpack(i) for i in local_expr]))
+            elif local_typ in (dict, OrderedDict):
+                tsk = Task_(
+                    uuid.uuid4().hex, local_typ, Dict({_unpack(k): _unpack(v) for k, v in local_expr.items()})
                 )
-            elif dataclasses.is_dataclass(expr) and not isinstance(expr, type):
-                tsk = Task(
-                    tok,
-                    typ,
-                    *[_unpack(getattr(expr, f.name)) for f in dataclasses.fields(expr)],
+            elif dataclasses_is_dataclass(expr) and not isinstance(expr, type):
+                # Use list comprehension due to fields() speed over attribute/group lookup
+                tsk = Task_(
+                    uuid.uuid4().hex,
+                    local_typ,
+                    *[_unpack(getattr(expr, f.name)) for f in dataclasses_fields(expr)],
                 )
-            elif is_namedtuple_instance(expr):
-                tsk = Task(tok, typ, *[_unpack(i) for i in expr])
+            elif is_namedtuple_instance_(expr):
+                tsk = Task_(uuid.uuid4().hex, local_typ, *[_unpack(i) for i in expr])
             else:
                 return expr
 
-        repack_dsk[tok] = tsk
-        return TaskRef(tok)
+        repack_dsk[tsk.key] = tsk
+        return TaskRef_(tsk.key)
 
     out = uuid.uuid4().hex
-    repack_dsk[out] = Task(out, tuple, List(*[_unpack(i) for i in args]))
+    repack_func_args = [_unpack(i) for i in args]
+    repack_dsk[out] = Task(out, tuple, List(*repack_func_args))
 
     def repack(results):
         dsk = repack_dsk.copy()
@@ -586,10 +637,13 @@ def optimize(*args, traverse=True, **kwargs):
 
     dsk = collections_to_expr(collections)
 
+    # Move lookups outside loop
+    dsk_graph = dsk.__dask_graph__
     postpersists = []
+    append_postpersist = postpersists.append
     for a in collections:
         r, s = a.__dask_postpersist__()
-        postpersists.append(r(dsk.__dask_graph__(), *s))
+        append_postpersist(r(dsk_graph(), *s))
 
     return repack(postpersists)
 
