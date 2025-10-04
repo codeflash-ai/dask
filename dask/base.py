@@ -221,30 +221,32 @@ def is_dask_collection(x) -> bool:
     implementation of the protocol.
 
     """
-    if (
-        isinstance(x, type)
-        or not hasattr(x, "__dask_graph__")
-        or not callable(x.__dask_graph__)
-    ):
+    # Combined strict check for type and attributes, avoid further getattr/callable if already type or lacks attribute
+    if isinstance(x, type):
         return False
 
-    pkg_name = getattr(type(x), "__module__", "")
-    if pkg_name.split(".")[0] in ("dask_cudf",):
-        # Temporary hack to avoid graph materialization. Note that this won't work with
-        # dask_expr.array objects wrapped by xarray or pint. By the time dask_expr.array
-        # is published, we hope to be able to rewrite this method completely.
-        # Read: https://github.com/dask/dask/pull/10676
+    # Fast path for hasattr + callable check (single lookup)
+    dask_graph = getattr(x, "__dask_graph__", None)
+    if dask_graph is None or not callable(dask_graph):
+        return False
+
+    # Move type(x) out to a variable to avoid calling type(x) multiple times
+    x_type = type(x)
+    pkg_name = getattr(x_type, "__module__", "")
+
+    # Optimize string checks: split only when needed
+    if pkg_name.startswith("dask_cudf"):
+        # return True if module is exactly "dask_cudf" or starts with "dask_cudf."
+        # Faster than .split(".")[0], as it avoids temporary tuple/list/split
+        return pkg_name == "dask_cudf" or pkg_name.startswith("dask_cudf.")
+
+    if pkg_name.startswith("dask.dataframe.dask_expr"):
         return True
-    elif pkg_name.startswith("dask.dataframe.dask_expr"):
-        return True
-    elif pkg_name.startswith("dask.array._array_expr"):
+    if pkg_name.startswith("dask.array._array_expr"):
         return True
 
-    # xarray, pint, and possibly other wrappers always define a __dask_graph__ method,
-    # but it may return None if they wrap around a non-dask object.
-    # In all known dask collections other than dask-expr,
-    # calling __dask_graph__ is cheap.
-    return x.__dask_graph__() is not None
+    # In all known dask collections other than dask-expr, calling __dask_graph__ is cheap.
+    return dask_graph() is not None
 
 
 class DaskMethodsMixin:
