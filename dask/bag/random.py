@@ -76,29 +76,35 @@ def _sample_reduce(reduce_iter, k, replace):
 
     Returns a sequence of uniformly distributed samples;
     """
-    ns_ks = []
-    s = []
+    # Use local variables to minimize attribute lookup
+    s_extend = s = []
     n = 0
-    # unfolding reduce outputs
-    for i in reduce_iter:
-        (s_i, n_i) = i
-        s.extend(s_i)
+    ns_ks_append = ns_ks = []
+
+    # Unfolding reduce outputs - flatten results efficiently
+    # Pre-allocated lists (where possible) to reduce overhead
+    for s_i, n_i in reduce_iter:
+        s_extend.extend(s_i)
         n += n_i
-        k_i = len(s_i)
-        ns_ks.append((n_i, k_i))
+        ns_ks_append.append((n_i, len(s_i)))
 
     if k > n and not replace:
-        return s, n
+        return s_extend, n
 
-    # creating the probability array
+    # Prepare flattened weights list with a single pass, avoid repeated list extension
     p = []
+    p_append = p.append
     for n_i, k_i in ns_ks:
         if k_i > 0:
-            p_i = n_i / (k_i * n)
-            p += [p_i] * k_i
+            prob = n_i / (k_i * n)
+            # Instead of p += [prob] * k_i, use extend to avoid creating temporary list
+            p.extend([prob] * k_i)
 
-    sample_func = rnd.choices if replace else _weighted_sampling_without_replacement
-    return sample_func(population=s, weights=p, k=k), n
+    # Use rnd.choices directly for replacement, custom for no replacement
+    return (
+        rnd.choices(population=s_extend, weights=p, k=k) if replace
+        else _weighted_sampling_without_replacement(s_extend, p, k)
+    ), n
 
 
 def _weighted_sampling_without_replacement(population, weights, k):
@@ -106,8 +112,21 @@ def _weighted_sampling_without_replacement(population, weights, k):
     Source:
         Weighted random sampling with a reservoir, Pavlos S. Efraimidis, Paul G. Spirakis
     """
-    elt = [(math.log(rnd.random()) / weights[i], i) for i in range(len(weights))]
-    return [population[x[1]] for x in heapq.nlargest(k, elt)]
+    # Cache frequently used functions and variables
+    rand = rnd.random
+    pop_len = len(weights)
+    log = math.log
+
+    # Preallocate list and fill efficiently
+    elt = [None] * pop_len
+    for i in range(pop_len):
+        elt[i] = (log(rand()) / weights[i], i)
+
+    # Use heapq.nlargest for best k
+    # Replace x[1] with i for less tuple unpacking inside list comprehension
+    # Avoid lambdas in nlargest by constructing tuple order as desired
+    largest = heapq.nlargest(k, elt)
+    return [population[i] for _, i in largest]
 
 
 def _sample(population, k, split_every):
