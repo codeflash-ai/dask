@@ -24,6 +24,16 @@ from dask.delayed import Delayed, delayed
 from dask.highlevelgraph import HighLevelGraph, Layer, MaterializedLayer
 from dask.typing import Graph, Key
 
+_bag_cls = None
+
+_array_cls = None
+
+_dataframe_cls = None
+
+_series_cls = None
+
+_import_errors = set()
+
 __all__ = ("bind", "checkpoint", "clone", "wait_on")
 
 T = TypeVar("T")
@@ -123,26 +133,39 @@ def _can_apply_blockwise(collection) -> bool:
     FIXME this returns False for collections that wrap around around da.Array, such as
           pint.Quantity, xarray DataArray, Dataset, and Variable.
     """
-    try:
-        from dask.bag import Bag
-
-        if isinstance(collection, Bag):
+    global _bag_cls, _array_cls, _dataframe_cls, _series_cls, _import_errors
+    
+    if "dask.bag" not in _import_errors and _bag_cls is None:
+        try:
+            from dask.bag import Bag
+            _bag_cls = Bag
+        except ImportError:
+            _import_errors.add("dask.bag")
+    if _bag_cls is not None:
+        if isinstance(collection, _bag_cls):
             return True
-    except ImportError:
-        pass
-    try:
-        from dask.array import Array
 
-        if isinstance(collection, Array):
+    if "dask.array" not in _import_errors and _array_cls is None:
+        try:
+            from dask.array import Array
+            _array_cls = Array
+        except ImportError:
+            _import_errors.add("dask.array")
+    if _array_cls is not None:
+        if isinstance(collection, _array_cls):
             return True
-    except ImportError:
-        pass
-    try:
-        from dask.dataframe import DataFrame, Series
 
-        return isinstance(collection, (DataFrame, Series))
-    except ImportError:
-        return False
+    if "dask.dataframe" not in _import_errors and (_dataframe_cls is None or _series_cls is None):
+        try:
+            from dask.dataframe import DataFrame, Series
+            _dataframe_cls = DataFrame
+            _series_cls = Series
+        except ImportError:
+            _import_errors.add("dask.dataframe")
+    if _dataframe_cls is not None and _series_cls is not None:
+        return isinstance(collection, (_dataframe_cls, _series_cls))
+
+    return False
 
 
 def _build_map_layer(
