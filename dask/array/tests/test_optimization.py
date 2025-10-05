@@ -16,6 +16,8 @@ from dask.array.optimization import fuse_slice, optimize, optimize_blockwise
 from dask.array.utils import assert_eq
 from dask.highlevelgraph import HighLevelGraph
 
+istask = dask.core.istask
+
 
 def _check_get_task_eq(a, b) -> bool:
     """
@@ -32,7 +34,7 @@ def _check_get_task_eq(a, b) -> bool:
         return False
 
     for ae, be in zip(a[1:], b[1:]):
-        if dask.core.istask(ae):
+        if istask(ae):
             if not _check_get_task_eq(ae, be):
                 return False
         elif ae != be:
