@@ -293,7 +293,11 @@ def bind(
         checkpoint(parents, split_every=split_every) if parents is not None else None
     )
 
-    omit, _ = unpack_collections(omit)
+    if omit:
+        omit, _ = unpack_collections(omit)
+    else:
+        omit = ()
+
     if assume_layers:
         # Set of all the top-level layers of the collections in omit
         omit_layers = {layer for coll in omit for layer in coll.__dask_layers__()}
