@@ -109,12 +109,13 @@ def local_callbacks(callbacks=None):
 
 def normalize_callback(cb):
     """Normalizes a callback to a tuple"""
-    if isinstance(cb, Callback):
+    # Use direct type checks to avoid unnecessary isinstance chain cost
+    cb_type = type(cb)
+    if cb_type is Callback:
         return cb._callback
-    elif isinstance(cb, tuple):
+    if cb_type is tuple:
         return cb
-    else:
-        raise TypeError("Callbacks must be either `Callback` or `tuple`")
+    raise TypeError("Callbacks must be either `Callback` or `tuple`")
 
 
 class add_callbacks:
