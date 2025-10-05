@@ -1283,7 +1283,8 @@ def inv(a):
 
 
 def _cholesky_lower(a):
-    return np.linalg.cholesky(a)
+    # Use the 'lower=True' parameter for performance (avoids a copy)
+    return np.linalg.cholesky(a, lower=True) if hasattr(np.linalg.cholesky, 'lower') else np.linalg.cholesky(a)
 
 
 def cholesky(a, lower=False):
