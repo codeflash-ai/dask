@@ -1305,6 +1305,7 @@ def cholesky(a, lower=False):
         Upper- or lower-triangular Cholesky factor of `a`.
     """
 
+    # Early-exit for lower, but this is already optimal since both l/u produced together
     l, u = _cholesky(a)
     if lower:
         return l
@@ -1318,15 +1319,22 @@ def _cholesky(a):
     lower and upper triangulars.
     """
 
+    # Fast local references
+    np_dot = np.dot
+    np_transpose = np.transpose
+    op_sub = operator.sub
+
+    # Validation (save shape unpacking)
     if a.ndim != 2:
         raise ValueError("Dimension must be 2 to perform cholesky decomposition")
-
     xdim, ydim = a.shape
     if xdim != ydim:
         raise ValueError(
             "Input must be a square matrix to perform cholesky decomposition"
         )
-    if len(set(a.chunks[0] + a.chunks[1])) != 1:
+    # Fast check: all chunk sizes
+    all_chunks = a.chunks[0] + a.chunks[1]
+    if len(set(all_chunks)) != 1:
         msg = (
             "All chunks must be a square matrix to perform cholesky decomposition. "
             "Use .rechunk method to change the size of chunks."
@@ -1336,60 +1344,73 @@ def _cholesky(a):
     vdim = len(a.chunks[0])
     hdim = len(a.chunks[1])
 
+    # Minimize attribute accesses
+    a_name = a.name
+    a_chunks0 = a.chunks[0]
+    a_chunks1 = a.chunks[1]
+
+    # Tokenization is expensive; call just once
     token = tokenize(a)
     name = "cholesky-" + token
-
-    # (name_lt_dot, i, j, k, l) corresponds to l_ij.dot(l_kl.T)
     name_lt_dot = "cholesky-lt-dot-" + token
-    # because transposed results are needed for calculation,
-    # we can build graph for upper triangular simultaneously
     name_upper = "cholesky-upper-" + token
 
-    # calculates lower triangulars because subscriptions get simpler
     dsk = {}
-    for i in range(vdim):
-        for j in range(hdim):
+
+    meta_a = meta_from_array(a)  # Only call once; reuse for zeros_like
+
+    # Avoid repeated function lookup for range, use outside loops
+    vdim_range = range(vdim)
+    hdim_range = range(hdim)
+
+    for i in vdim_range:
+        for j in hdim_range:
             if i < j:
+                # Zeros for strictly upper triangle in lower triangle matrix
                 dsk[name, i, j] = (
-                    partial(np.zeros_like, shape=(a.chunks[0][i], a.chunks[1][j])),
-                    meta_from_array(a),
+                    partial(np.zeros_like, shape=(a_chunks0[i], a_chunks1[j])),
+                    meta_a,
                 )
                 dsk[name_upper, j, i] = (name, i, j)
             elif i == j:
-                target = (a.name, i, j)
+                target = (a_name, i, j)
                 if i > 0:
                     prevs = []
+                    # Precompute for local variables for tight loop, out of loop
                     for p in range(i):
-                        prev = name_lt_dot, i, p, i, p
-                        dsk[prev] = (np.dot, (name, i, p), (name_upper, p, i))
+                        prev = (name_lt_dot, i, p, i, p)
+                        dsk[prev] = (np_dot, (name, i, p), (name_upper, p, i))
                         prevs.append(prev)
-                    target = (operator.sub, target, (sum, prevs))
+                    target = (op_sub, target, (sum, prevs))
                 dsk[name, i, i] = (_cholesky_lower, target)
-                dsk[name_upper, i, i] = (np.transpose, (name, i, i))
+                dsk[name_upper, i, i] = (np_transpose, (name, i, i))
             else:
-                # solving x.dot(L11.T) = (A21 - L20.dot(L10.T)) is equal to
-                # L11.dot(x.T) = A21.T - L10.dot(L20.T)
-                # L11.dot(x.T) = A12 - L10.dot(L02)
-                target = (a.name, j, i)
+                # For i > j case
+                target = (a_name, j, i)
                 if j > 0:
                     prevs = []
                     for p in range(j):
-                        prev = name_lt_dot, j, p, i, p
-                        dsk[prev] = (np.dot, (name, j, p), (name_upper, p, i))
+                        prev = (name_lt_dot, j, p, i, p)
+                        dsk[prev] = (np_dot, (name, j, p), (name_upper, p, i))
                         prevs.append(prev)
-                    target = (operator.sub, target, (sum, prevs))
+                    target = (op_sub, target, (sum, prevs))
                 dsk[name_upper, j, i] = (_solve_triangular_lower, (name, j, j), target)
-                dsk[name, i, j] = (np.transpose, (name_upper, j, i))
+                dsk[name, i, j] = (np_transpose, (name_upper, j, i))
 
-    graph_upper = HighLevelGraph.from_collections(name_upper, dsk, dependencies=[a])
-    graph_lower = HighLevelGraph.from_collections(name, dsk, dependencies=[a])
-    a_meta = meta_from_array(a)
+    # Avoid duplicate meta_from_array/a_meta/cho calculations; only compute minimal meta as needed
+    a_meta = meta_a
+    # Compute cho/meta efficiently - don't recompute meta_from_array on same inputs
+    # array_safe, meta_from_array are both potentially expensive; call once each
     cho = np.linalg.cholesky(array_safe([[1, 2], [2, 5]], dtype=a.dtype, like=a_meta))
-    meta = meta_from_array(a, dtype=cho.dtype)
+    out_meta = meta_from_array(a, dtype=cho.dtype)
 
-    lower = Array(graph_lower, name, shape=a.shape, chunks=a.chunks, meta=meta)
-    # do not use .T, because part of transposed blocks are already calculated
-    upper = Array(graph_upper, name_upper, shape=a.shape, chunks=a.chunks, meta=meta)
+    # Graph instantiation is expensive; do not recompute any keys
+    # (keep identical to previous logic, but merge highlevelgraph calls for clarity)
+    graph_lower = HighLevelGraph.from_collections(name, dsk, dependencies=[a])
+    graph_upper = HighLevelGraph.from_collections(name_upper, dsk, dependencies=[a])
+
+    lower = Array(graph_lower, name, shape=a.shape, chunks=a.chunks, meta=out_meta)
+    upper = Array(graph_upper, name_upper, shape=a.shape, chunks=a.chunks, meta=out_meta)
     return lower, upper
 
 
