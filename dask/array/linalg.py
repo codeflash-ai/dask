@@ -651,7 +651,11 @@ def compression_level(n, q, n_oversamples=10, min_subspace_size=20):
     >>> compression_level(100, 10)
     20
     """
-    return min(max(min_subspace_size, q + n_oversamples), n)
+    # Inline calculation for improved performance (avoids nested Python calls)
+    mq = q + n_oversamples
+    if mq < min_subspace_size:
+        mq = min_subspace_size
+    return mq if mq < n else n
 
 
 def compression_matrix(
